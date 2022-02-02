@@ -206,11 +206,11 @@ impl<I: HtmlSink<u32>> TreeSink for ParseTraverser<I> {
                         .unwrap();
                     let element = self.free_nodes.remove(child_index);
                     assert_eq!(element.handle, handle);
-                    println!(
-                        "appending child {} to {}",
-                        &element,
-                        parent.map_or(String::new(), TraversalNode::to_string)
-                    );
+                    // println!(
+                    //     "appending child {} to {}",
+                    //     &element,
+                    //     parent.map_or(String::new(), TraversalNode::to_string)
+                    // );
                     self.inner.append_element(
                         &self
                             .traversal
@@ -222,11 +222,11 @@ impl<I: HtmlSink<u32>> TreeSink for ParseTraverser<I> {
                     self.traversal.push(element);
                 }
                 NodeOrText::AppendText(text) => {
-                    println!(
-                        "appending child \"{}\" to {}",
-                        text.to_string(),
-                        parent.map_or(String::new(), TraversalNode::to_string)
-                    );
+                    // println!(
+                    //     "appending child \"{}\" to {}",
+                    //     text.to_string(),
+                    //     parent.map_or(String::new(), TraversalNode::to_string)
+                    // );
                     self.inner.append_text(
                         &self
                             .traversal
