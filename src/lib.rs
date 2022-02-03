@@ -73,6 +73,8 @@ where
 
     fn append_text(&mut self, context: HtmlContext<Handle>, text: &str);
 
+    fn append_comment(&mut self, context: HtmlContext<Handle>, text: &str);
+
     fn reset(&mut self) -> Self::Output;
 
     fn finish(mut self) -> Self::Output {
@@ -149,6 +151,12 @@ impl<Wr: Write, Handle: Eq + Copy + fmt::Display> HtmlSink<Handle>
         self.inner.write_text(text).unwrap();
     }
 
+    fn append_comment(&mut self, context: HtmlContext<Handle>, text: &str) {
+        self.pop_to_path(context);
+
+        self.inner.write_comment(text).unwrap();
+    }
+
     fn reset(&mut self) -> Self::Output {
         self.pop_to_path(&[])
     }
@@ -223,6 +231,17 @@ impl<Handle: Eq + Copy, S: HtmlSink<Handle>, M: Selector> HtmlSink<Handle>
             }
         }
         self.inner.append_text(context, text)
+    }
+
+    fn append_comment(&mut self, context: HtmlContext<Handle>, text: &str) {
+        if let Some(skip_handle) = self.skip_handle {
+            if context.iter().any(|elem| elem.handle == skip_handle) {
+                return;
+            } else {
+                self.skip_handle = None
+            }
+        }
+        self.inner.append_comment(context, text)
     }
 
     fn reset(&mut self) -> Self::Output {
@@ -313,6 +332,23 @@ where
         }
     }
 
+    fn append_comment(&mut self, context: HtmlContext<Handle>, text: &str) {
+        if let Some(select_handle) = self.select_handle {
+            if let Some(select_index) = context
+                .iter()
+                .enumerate()
+                .find_map(|(index, elem)| (elem.handle == select_handle).then(|| index))
+            {
+                // select continues
+                self.inner.append_comment(&context[select_index..], text)
+            } else {
+                // select ends
+                self.select_handle = None;
+                self.output.extend(iter::once(self.inner.reset()));
+            }
+        }
+    }
+
     fn reset(&mut self) -> Self::Output {
         if self.select_handle.take().is_some() {
             self.output.extend(iter::once(self.inner.reset()));
@@ -375,6 +411,16 @@ where
         self.inner.append_text(filtered_path.as_slice(), text);
     }
 
+    fn append_comment(&mut self, context: HtmlContext<Handle>, text: &str) {
+        // TODO optimise when not hitting
+        let filtered_path = context
+            .iter()
+            .filter(|element| !self.matcher.is_match(element))
+            .cloned()
+            .collect::<Vec<_>>();
+        self.inner.append_comment(filtered_path.as_slice(), text);
+    }
+
     fn reset(&mut self) -> Self::Output {
         self.inner.reset()
     }
@@ -409,6 +455,11 @@ impl<Handle: Copy + Eq, A: HtmlSink<Handle>, B: HtmlSink<Handle>> HtmlSink<Handl
         self.1.append_text(context, text);
     }
 
+    fn append_comment(&mut self, context: HtmlContext<Handle>, text: &str) {
+        self.0.append_comment(context, text);
+        self.1.append_comment(context, text);
+    }
+
     fn reset(&mut self) -> Self::Output {
         (self.0.reset(), self.1.reset())
     }
@@ -427,7 +478,7 @@ mod test {
         let mut opts = ParseOpts::default();
         opts.tree_builder.exact_errors = true;
         let parser = parse_document(sink, opts);
-        parser.one(test);
+        parser.one(test).unwrap();
     }
 
     fn serialiser(buf: &mut Vec<u8>) -> HtmlSerializer<&mut Vec<u8>, u32> {
@@ -439,7 +490,7 @@ mod test {
     fn doc_identity() {
         let mut buf = Vec::new();
         let mut sink = serialiser(&mut buf);
-        let test = "<!DOCTYPE html><html><head></head><body><p><b>hello</b></p><p>world!</p></body></html>";
+        let test = "<!DOCTYPE html><html><head></head><body><!-- comment --><p><b>hello</b></p><p>world!</p></body></html>";
         stream_doc(test, &mut sink);
         assert_eq!(String::from_utf8(buf).unwrap(), test);
     }
@@ -455,7 +506,7 @@ mod test {
         opts.tree_builder.exact_errors = true;
         let parser = parse_fragment(&mut sink, opts);
         let test = "<p><b>hello</b></p><p>world!</p>";
-        parser.one(test);
+        parser.one(test).unwrap();
         assert_eq!(String::from_utf8(buf).unwrap(), test);
     }
 
@@ -463,7 +514,7 @@ mod test {
     fn remove_elements() {
         let mut buf = Vec::new();
         let mut serializer = serialiser(&mut buf);
-        let test = r#"<!DOCTYPE html><html><head></head><body><p class="hello"><b>hello</b></p><p>world!</p></body></html>"#;
+        let test = r#"<!DOCTYPE html><html><head></head><body><p class="hello"><!-- comment --><b>hello</b></p><p>world!</p></body></html>"#;
         stream_doc(
             test,
             ElementRemover::wrap(&mut serializer, css_select!(."hello")),
@@ -479,9 +530,9 @@ mod test {
         let mut buf = Vec::new();
         let mut serializer = serialiser(&mut buf);
         let sink = RootFilter::<_, _, _>::wrap(&mut serializer, css_select!("p"));
-        let test = "<!DOCTYPE html><html><head></head><body><p><b>hello</b></p><p>world!</p></body></html>";
+        let test = "<!DOCTYPE html><html><head></head><body><p><!-- comment --><b>hello</b></p><p>world!</p></body></html>";
         stream_doc(test, sink);
-        assert_eq!(buf, b"<p><b>hello</b></p><p>world!</p>");
+        assert_eq!(buf, b"<p><!-- comment --><b>hello</b></p><p>world!</p>");
     }
 
     #[test]

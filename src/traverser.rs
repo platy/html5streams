@@ -1,6 +1,6 @@
 #![allow(unused)]
 use core::fmt;
-use std::borrow::Cow;
+use std::{borrow::Cow, collections::HashMap};
 
 use html5ever::{
     tree_builder::{NodeOrText, TreeSink},
@@ -9,14 +9,11 @@ use html5ever::{
 
 use crate::{
     css_select,
-    selector::{ContextualSelector, ElementSelector, Selector},
+    selector::{ContextualSelector, ElementSelector, NameSelector, Selector},
     ElementSkipper, HtmlPathElement, HtmlSink,
 };
 
-pub fn parse_document<Sink>(
-    sink: Sink,
-    opts: ParseOpts,
-) -> Parser<impl TreeSink<Output = Sink::Output>>
+pub fn parse_document<Sink>(sink: Sink, opts: ParseOpts) -> Parser<ParseTraverser<Sink>>
 where
     Sink: HtmlSink<u32>,
 {
@@ -27,7 +24,7 @@ where
 pub fn parse_fragment<Sink>(
     sink: Sink,
     opts: ParseOpts,
-) -> Parser<impl TreeSink<Output = Sink::Output>>
+) -> Parser<ParseTraverser<ElementSkipper<Sink, NameSelector>>>
 where
     Sink: HtmlSink<u32>,
 {
@@ -41,20 +38,27 @@ where
     html5ever::parse_fragment(sink, opts, context_name, context_attrs)
 }
 
-struct ParseTraverser<I> {
+pub struct ParseTraverser<I> {
     inner: I,
+    parse_error: Option<Cow<'static, str>>,
     handle: u32,
-    traversal: Vec<TraversalNode>,
-    free_nodes: Vec<TraversalNode>,
+    traversal: Vec<TraversalElement>,
+    free_nodes: HashMap<u32, Node>,
 }
 
 #[derive(Debug)]
-struct TraversalNode {
+enum Node {
+    Element(TraversalElement),
+    Comment(html5ever::tendril::StrTendril),
+}
+
+#[derive(Debug)]
+struct TraversalElement {
     handle: u32,
     name: html5ever::QualName,
     attrs: Vec<Attribute>,
 }
-impl TraversalNode {
+impl TraversalElement {
     pub(crate) fn as_html_path_element(&self) -> HtmlPathElement<u32> {
         HtmlPathElement {
             handle: self.handle,
@@ -64,7 +68,7 @@ impl TraversalNode {
     }
 }
 
-impl fmt::Display for TraversalNode {
+impl fmt::Display for TraversalElement {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
@@ -83,16 +87,18 @@ impl<I> ParseTraverser<I> {
     pub(crate) fn new_document(serializer: I) -> Self {
         Self {
             inner: serializer,
+            parse_error: None,
             handle: 0,
             traversal: vec![],
-            free_nodes: vec![],
+            free_nodes: HashMap::new(),
         }
     }
     pub(crate) fn new_fragment(serializer: I) -> Self {
         Self {
             inner: serializer,
+            parse_error: None,
             handle: 1,
-            traversal: vec![TraversalNode {
+            traversal: vec![TraversalElement {
                 handle: 1,
                 name: QualName {
                     prefix: None,
@@ -101,20 +107,18 @@ impl<I> ParseTraverser<I> {
                 },
                 attrs: vec![],
             }],
-            free_nodes: vec![],
+            free_nodes: HashMap::new(),
         }
     }
 
-    fn node(&self, target: &u32) -> &TraversalNode {
-        for node in self.traversal.iter().rev() {
-            if &node.handle == target {
-                return node;
+    fn element(&self, target: &u32) -> &TraversalElement {
+        for element in self.traversal.iter().rev() {
+            if &element.handle == target {
+                return element;
             }
         }
-        for node in self.free_nodes.iter().rev() {
-            if &node.handle == target {
-                return node;
-            }
+        if let Some(Node::Element(element)) = self.free_nodes.get(target) {
+            return element;
         }
         panic!("Couldn't find elem with handle {}", target);
     }
@@ -123,14 +127,19 @@ impl<I> ParseTraverser<I> {
 impl<I: HtmlSink<u32>> TreeSink for ParseTraverser<I> {
     type Handle = u32;
 
-    type Output = I::Output;
+    type Output = Result<I::Output, Cow<'static, str>>;
 
     fn finish(self) -> Self::Output {
-        self.inner.finish()
+        if let Some(err) = self.parse_error {
+            Err(err)
+        } else {
+            Ok(self.inner.finish())
+        }
     }
 
-    fn parse_error(&mut self, msg: std::borrow::Cow<'static, str>) {
-        println!("Parse error : {}", msg);
+    fn parse_error(&mut self, msg: Cow<'static, str>) {
+        // currently using a fast fail mode, ideally we'd tell html5ever to abort the parse
+        self.parse_error = Some(msg);
     }
 
     fn get_document(&mut self) -> Self::Handle {
@@ -138,7 +147,7 @@ impl<I: HtmlSink<u32>> TreeSink for ParseTraverser<I> {
     }
 
     fn elem_name<'a>(&'a self, target: &'a Self::Handle) -> html5ever::ExpandedName<'a> {
-        self.node(target).name.expanded()
+        self.element(target).name.expanded()
     }
 
     fn create_element(
@@ -148,26 +157,20 @@ impl<I: HtmlSink<u32>> TreeSink for ParseTraverser<I> {
         _flags: html5ever::tree_builder::ElementFlags,
     ) -> Self::Handle {
         self.handle += 1;
-        self.free_nodes.push(TraversalNode {
-            handle: self.handle,
-            name,
-            attrs,
-        });
+        self.free_nodes.insert(
+            self.handle,
+            Node::Element(TraversalElement {
+                handle: self.handle,
+                name,
+                attrs,
+            }),
+        );
         self.handle
     }
 
     fn create_comment(&mut self, text: html5ever::tendril::StrTendril) -> Self::Handle {
-        println!("Ignoring html comment, inserting span instead : {}", text);
         self.handle += 1;
-        self.free_nodes.push(TraversalNode {
-            handle: self.handle,
-            name: QualName {
-                prefix: None,
-                ns: ns!(html),
-                local: local_name!("span"),
-            },
-            attrs: vec![],
-        });
+        self.free_nodes.insert(self.handle, Node::Comment(text));
         self.handle
     }
 
@@ -195,46 +198,37 @@ impl<I: HtmlSink<u32>> TreeSink for ParseTraverser<I> {
                     self.traversal.pop();
                 }
             };
-            match child {
-                NodeOrText::AppendNode(handle) => {
-                    let child_index = self
-                        .free_nodes
-                        .iter()
-                        .enumerate()
-                        .rev()
-                        .find_map(|(index, node)| (handle == node.handle).then(|| index))
-                        .unwrap();
-                    let element = self.free_nodes.remove(child_index);
-                    assert_eq!(element.handle, handle);
-                    // println!(
-                    //     "appending child {} to {}",
-                    //     &element,
-                    //     parent.map_or(String::new(), TraversalNode::to_string)
-                    // );
-                    self.inner.append_element(
-                        &self
+            if self.parse_error.is_none() {
+                match child {
+                    NodeOrText::AppendNode(handle) => {
+                        let node = self.free_nodes.remove(&handle).unwrap();
+                        let context = self
                             .traversal
                             .iter()
-                            .map(TraversalNode::as_html_path_element)
-                            .collect::<Vec<_>>(), // TODO these should be reused
-                        &element.as_html_path_element(),
-                    );
-                    self.traversal.push(element);
-                }
-                NodeOrText::AppendText(text) => {
-                    // println!(
-                    //     "appending child \"{}\" to {}",
-                    //     text.to_string(),
-                    //     parent.map_or(String::new(), TraversalNode::to_string)
-                    // );
-                    self.inner.append_text(
-                        &self
-                            .traversal
-                            .iter()
-                            .map(TraversalNode::as_html_path_element)
-                            .collect::<Vec<_>>(),
-                        &text,
-                    );
+                            .map(TraversalElement::as_html_path_element)
+                            .collect::<Vec<_>>(); // TODO these should be reused;
+                        match node {
+                            Node::Element(element) => {
+                                assert_eq!(element.handle, handle);
+                                self.inner
+                                    .append_element(&context, &element.as_html_path_element());
+                                self.traversal.push(element);
+                            }
+                            Node::Comment(text) => {
+                                self.inner.append_comment(&context, &text);
+                            }
+                        }
+                    }
+                    NodeOrText::AppendText(text) => {
+                        self.inner.append_text(
+                            &self
+                                .traversal
+                                .iter()
+                                .map(TraversalElement::as_html_path_element)
+                                .collect::<Vec<_>>(),
+                            &text,
+                        );
+                    }
                 }
             }
         }
@@ -269,7 +263,7 @@ impl<I: HtmlSink<u32>> TreeSink for ParseTraverser<I> {
     }
 
     fn set_quirks_mode(&mut self, mode: html5ever::tree_builder::QuirksMode) {
-        println!("Quirks mode : {:?}", mode);
+        // println!("Quirks mode : {:?}", mode);
     }
 
     fn append_before_sibling(
