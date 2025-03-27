@@ -70,16 +70,11 @@ impl TraversalElement {
 
 impl fmt::Display for TraversalElement {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(
-            f,
-            "#{}: <{}{}>",
-            self.handle,
-            self.name.local,
-            self.attrs
-                .iter()
-                .map(|att| format!(" {}=\"{}\"", att.name.local, &*att.value))
-                .collect::<String>()
-        )
+        write!(f, "#{}: <{}", self.handle, self.name.local,)?;
+        for att in &self.attrs {
+            write!(f, " {}=\"{}\"", att.name.local, &*att.value)?;
+        }
+        write!(f, ">")
     }
 }
 

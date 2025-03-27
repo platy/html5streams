@@ -19,11 +19,11 @@ pub struct HtmlPathElement<'a, Handle> {
     pub attrs: Cow<'a, [Attribute]>,
 }
 
-impl<'a, Handle> HtmlPathElement<'a, Handle> {
+impl<Handle> HtmlPathElement<'_, Handle> {
     pub fn attr(&self, name: QualName) -> Option<&StrTendril> {
         self.attrs
             .iter()
-            .find_map(|a| (a.name == name).then(|| &a.value))
+            .find_map(|a| (a.name == name).then_some(&a.value))
     }
 
     pub fn classes(&self) -> iter::Flatten<std::option::IntoIter<std::str::SplitWhitespace<'_>>> {
@@ -40,7 +40,7 @@ impl<'a, Handle> HtmlPathElement<'a, Handle> {
     }
 }
 
-impl<'a, Handle: fmt::Display> fmt::Display for HtmlPathElement<'a, Handle> {
+impl<Handle: fmt::Display> fmt::Display for HtmlPathElement<'_, Handle> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "#{} <{}", self.handle, &*self.name.local)?;
         for Attribute { name, value } in self.attrs.iter() {
@@ -295,7 +295,7 @@ where
             if let Some(select_index) = context
                 .iter()
                 .enumerate()
-                .find_map(|(index, elem)| (elem.handle == select_handle).then(|| index))
+                .find_map(|(index, elem)| (elem.handle == select_handle).then_some(index))
             {
                 // select continues
                 self.inner.append_element(&context[select_index..], element);
@@ -320,7 +320,7 @@ where
             if let Some(select_index) = context
                 .iter()
                 .enumerate()
-                .find_map(|(index, elem)| (elem.handle == select_handle).then(|| index))
+                .find_map(|(index, elem)| (elem.handle == select_handle).then_some(index))
             {
                 // select continues
                 self.inner.append_text(&context[select_index..], text)
@@ -337,7 +337,7 @@ where
             if let Some(select_index) = context
                 .iter()
                 .enumerate()
-                .find_map(|(index, elem)| (elem.handle == select_handle).then(|| index))
+                .find_map(|(index, elem)| (elem.handle == select_handle).then_some(index))
             {
                 // select continues
                 self.inner.append_comment(&context[select_index..], text)

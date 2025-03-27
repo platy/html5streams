@@ -116,7 +116,7 @@ impl Selector for IdSelector {
             local: local_name!("id"),
         };
         if let Some(id) = element.attr(ID) {
-            let var_name: &str = &*id;
+            let var_name: &str = id;
             self.0 == var_name
         } else {
             false
@@ -140,10 +140,11 @@ impl ElementSelector {
         };
         self.name
             .as_ref()
-            .map_or(true, |match_name| *match_name == element.name)
-            && self.id.as_ref().map_or(true, |match_id| {
-                element.attr(ID).map_or(false, |id| match_id == id)
-            })
+            .is_none_or(|match_name| *match_name == element.name)
+            && self
+                .id
+                .as_ref()
+                .is_none_or(|match_id| element.attr(ID) == Some(match_id))
             && self
                 .classes
                 .iter()
